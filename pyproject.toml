@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["matplotlib", "seaborn"]
-examples = ["pyarrow"]          # for reading parquet example data
+examples = ["alpaca-py", "python-dotenv", "requests", "lxml", "pyarrow"]
 dev = [
     "pytest",
     "pytest-cov",

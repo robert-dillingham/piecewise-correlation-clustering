@@ -2,6 +2,8 @@
 
 *Living document. Update the [Update Log](#13-update-log) and [Decision Log](#12-decision-log) whenever scope changes.*
 
+**Status (2026-11-18):** Phase 0 (repository setup) is complete. Phase 1 (data model and class skeleton) is next.
+
 ---
 
 ## 1. Overview
@@ -24,25 +26,30 @@ This project ports and extends an earlier R implementation into a clean, tested,
 | 1 | **Clustering** | Use the combined matrix to group time series that contain only values and timestamps. The R version did this faster and more accurately than traditional methods. We need to reproduce and *demonstrate* that claim in Python. |
 | 2 | **Prediction** | Match the current window of one group against equivalent past periods (this month vs. last month, this year vs. last year) of all groups, find the closest match, and use that match's subsequent movement to extrapolate the target series. |
 
-**Non-goals (for now):** being a general-purpose data downloader, real-time/streaming support, or trading advice. Data fetching (e.g., Alpaca) lives in `examples/` only, never as a core dependency.
+**Non-goals (for now):** being a general-purpose data downloader, real-time/streaming support, or trading advice. Data fetching (e.g., Alpaca) lives in `examples/` only, never as a core dependency. Downloaded market data is not committed to the repository (see D8).
 
-## 3. Current State (Prototype: `general-testing.py`)
+## 3. Current State
 
-The prototype demonstrates the full calculation on 10 S&P 100 tickers with hourly bars from Alpaca. The flow is: fetch data → convert to New York time → scale each series by its maximum → aggregate to four periods with a weights dict → interpolate → pairwise r² matrix per period → weighted sum into `corr_dict['result']`.
+The original prototype (`general-testing.py`, now `notebooks/testing-notebook.ipynb`, excluded from linting) demonstrated the full calculation on 10 S&P 100 tickers with hourly bars from Alpaca. The flow is: fetch data → convert to New York time → scale each series by its maximum → aggregate to four periods with a weights dict → interpolate → pairwise r² matrix per period → weighted sum into `corr_dict['result']`.
+
+Two example scripts now exist:
+
+- `examples/download_sp100.py` downloads hourly IEX bars for the S&P 100 (2025-01-01 onward, fixed end date) and writes `examples/data/sp100_hourly.parquet` in tidy long format (`symbol`, `timestamp`, OHLCV, ...). Credentials come from a local `.env` file.
+- `examples/stocks_alpaca.py` reads that Parquet file and reproduces the prototype's calculation with a wide frame, one vectorized `corr()` per period, and explicit weight lookup. It intentionally keeps the full-sample max scaling and the interpolation behavior so the Phase 1 parity test has a baseline.
 
 ### Issues to fix during the port
 
-| Issue | Why it matters | Planned fix |
-|-------|----------------|-------------|
-| **API key and secret are hardcoded in the script** | Anyone with repo access can use them; they must never be committed | Rotate the keys now. Load from `.env` via `python-dotenv`. Add `.env` to `.gitignore` before the first commit. Provide `.env.example`. |
-| Missing `from io import StringIO` | Script fails on the `read_html` line | Fix in the example script. |
-| Scaling uses the **full-sample max** (`x / max(x)`) | Leaks future information. Harmless for clustering, but invalid for prediction/backtesting. | Make scaling configurable (`max`, `zscore`, `first`, `none`) and add an *expanding* (no-lookahead) mode for prediction. |
-| Empty time bins are likely filled by interpolation | Time-based grouping creates bins for overnight/weekend periods (NaN means), and `interpolate()` then invents values there, which smooths the series and can inflate correlations. **Verify with a test**, then fix. | Drop empty bins by default. Interpolate only real gaps (limit and policy configurable). |
-| `corr() ** 2` discards sign | Anti-correlated groups look identical to correlated ones | Make the similarity transform configurable (`r2`, `abs`, `signed`). |
-| Weighted sum uses `zip` over two dicts | Silently wrong if dict order ever differs | Look up weights explicitly by key. |
-| O(n²) Python loop over `Series.corr` | Slow for hundreds of groups | Use one vectorized `DataFrame.corr()` on the wide frame per period. |
-| `symbols[:10]` repeated and hardcoded | Easy to get inconsistent | Drive everything from the input data's groups. |
-| Result is a loose dict | Not reusable | Replace with a class (see §5). |
+| Issue | Why it matters | Planned fix | Status |
+|-------|----------------|-------------|--------|
+| **API key and secret were hardcoded in the script** | Anyone with repo access can use them; they must never be committed | Rotate the keys. Load from `.env` via `python-dotenv`. Add `.env` to `.gitignore`. Provide `.env.example`. | **Done** (Phase 0): keys revoked and removed, `.env` ignored, `.env.example` committed |
+| Missing `from io import StringIO` | Script fails on the `read_html` line | Fix in the example script. | **Done** (`download_sp100.py`) |
+| Scaling uses the **full-sample max** (`x / max(x)`) | Leaks future information. Harmless for clustering, but invalid for prediction/backtesting. | Make scaling configurable (`max`, `zscore`, `first`, `none`) and add an *expanding* (no-lookahead) mode for prediction. | Open (Phase 1 option, Phase 7 expanding mode, D7) |
+| Empty time bins are likely filled by interpolation | Time-based grouping creates bins for overnight/weekend periods (NaN means), and `interpolate()` then invents values there, which smooths the series and can inflate correlations. **Verify with a test**, then fix. | Drop empty bins by default. Interpolate only real gaps (limit and policy configurable). | Open (Phase 2); still present in `stocks_alpaca.py` |
+| `corr() ** 2` discards sign | Anti-correlated groups look identical to correlated ones | Make the similarity transform configurable (`r2`, `abs`, `signed`). | Open (Phase 1) |
+| Weighted sum uses `zip` over two dicts | Silently wrong if dict order ever differs | Look up weights explicitly by key. | Fixed in the example; class implementation in Phase 1 |
+| O(n²) Python loop over `Series.corr` | Slow for hundreds of groups | Use one vectorized `DataFrame.corr()` on the wide frame per period. | Fixed in the example; class implementation in Phase 1 |
+| `symbols[:10]` repeated and hardcoded | Easy to get inconsistent | Drive everything from the input data's groups. | Fixed in the example |
+| Result is a loose dict | Not reusable | Replace with a class (see §5). | Open (Phase 1) |
 
 ## 4. Repository Layout
 
@@ -52,8 +59,11 @@ piecewise-correlation-clustering/
 ├── README.md
 ├── LICENSE
 ├── project_plan.md
-├── .gitignore                  # includes .env, .venv/, .ipynb_checkpoints/
-├── .env.example
+├── .gitignore                  # includes .env, .venv*/, .ipynb_checkpoints/, examples/data/
+├── .env.example                # template for download_sp100.py credentials (.env itself is ignored)
+├── .github/
+│   └── workflows/
+│       └── ci.yml              # ruff check, ruff format --check, pytest on Python 3.10-3.12
 ├── src/
 │   └── piecewise_correlation/  # package name: see Decision Log D1
 │       ├── __init__.py
@@ -67,15 +77,18 @@ piecewise-correlation-clustering/
 │       ├── predict.py          # prediction methods
 │       └── plotting.py         # heatmap, dendrogram (optional dependency)
 ├── tests/
-│   ├── fixtures/               # CSVs exported from the R implementation
+│   ├── fixtures/               # small committed fixtures (synthetic and/or R-implementation CSVs)
 │   └── test_*.py
 ├── examples/
-│   └── stocks_alpaca.py        # the current prototype, cleaned up
-├── notebooks/                  # exploration only; logic lives in src/
+│   ├── download_sp100.py       # one-time download → examples/data/sp100_hourly.parquet
+│   ├── stocks_alpaca.py        # cleaned prototype; reads the Parquet file
+│   └── data/                   # gitignored; generated locally (see D8)
+├── notebooks/                  # exploration only; logic lives in src/ (excluded from ruff)
+│   └── testing-notebook.ipynb  # original prototype
 └── docs/
 ```
 
-**Dependencies:** core = `numpy`, `pandas>=2.2` (the `h` / `ME` / `QE` frequency aliases), `scipy` (hierarchical clustering). Optional extras: `plot` (matplotlib/seaborn), `examples` (alpaca-py, python-dotenv, requests, lxml), `dev` (pytest, ruff, mypy, jupyterlab).
+**Dependencies:** core = `numpy`, `pandas>=2.2` (the `h` / `ME` / `QE` frequency aliases), `scipy` (hierarchical clustering). Optional extras: `plot` (matplotlib/seaborn), `examples` (alpaca-py, python-dotenv, requests, lxml, pyarrow), `dev` (pytest, pytest-cov, ruff, mypy, jupyterlab). Build backend is hatchling with `packages = ["src/piecewise_correlation"]`; `requires-python = ">=3.10"`. Install for development with `python -m pip install -e ".[dev,examples]"`.
 
 ## 5. Core Design
 
@@ -214,17 +227,20 @@ This is the least-defined part of the project, so it is described as a hypothesi
 
 The phases follow your seven updates (numbers in parentheses) but are reordered by dependency: the class and DataFrame foundation (Update 7) has to come first because every other feature plugs into it.
 
-### Phase 0: Repository setup
-- [ ] Rotate exposed API keys; add `.env`, `.env.example`, `.gitignore` before the first commit
-- [ ] `git init`, venv, `pyproject.toml` (hatchling, `src/` layout), editable install
-- [ ] pytest, ruff, and a basic CI workflow (GitHub Actions)
-- [ ] Move the cleaned prototype to `examples/stocks_alpaca.py`
+### Phase 0: Repository setup (complete, 2026-11-18)
+- [x] Rotate exposed API keys; add `.env.example` and `.gitignore` (the first commit initially included `.venv` and `.ipynb_checkpoints`; these were untracked and removed from the repository)
+- [x] `git init`, venv, `pyproject.toml` (hatchling, `src/` layout), editable install
+- [x] pytest, ruff, and a basic CI workflow (GitHub Actions); ruff excludes `notebooks` and `*.md`
+- [x] Download script and local S&P 100 Parquet (`examples/download_sp100.py`; data folder gitignored)
+- [x] Move the cleaned prototype to `examples/stocks_alpaca.py` (reads the Parquet file)
+- [ ] Fill in `README.md` and confirm the `LICENSE` choice (placeholders exist; needed for the build)
 
 ### Phase 1: Foundation: data model and class skeleton (Updates 1, 7)
 - [ ] `data.py`: tidy-DataFrame schema, adapters (wide, MultiIndex), validation with clear errors
 - [ ] `PiecewiseCorrelation` class with `fit`, `matrices_`, `combined_`, `weights_`
 - [ ] Vectorized correlation; explicit weight lookup
-- [ ] **Parity test:** reproduce the prototype's output on the same fixture data
+- [ ] **Parity test:** reproduce the combined matrix of `examples/stocks_alpaca.py` through the class on a small committed fixture (synthetic, or a tiny sample if the data terms allow). Note that the example uses one shared time grid, while the original prototype built each symbol's series separately, so small differences from the original are expected; pin the chosen behavior in the test.
+- [ ] Tests must not depend on `examples/data/`, which does not exist in CI
 - **Done when:** the prototype's result matrix is reproduced through the class and the test passes.
 
 ### Phase 2: Missing data (Update 2)
@@ -270,13 +286,17 @@ The phases follow your seven updates (numbers in parentheses) but are reordered 
 - **Property tests:** symmetry, unit diagonal, bounds, invariance to group ordering, invariance to row shuffling.
 - **Synthetic data generator** in `tests/` with known cluster structure for deterministic clustering tests.
 - **Regression tests** for the bugs listed in §3.
+- **No test depends on `examples/data/`.** That folder is gitignored and absent in CI. Tests use the synthetic generator or small committed fixtures.
 
 ## 10. Tooling and Conventions
 
 - VS Code with Python, Pylance, and Ruff extensions; `.venv` selected as the interpreter.
 - Notebooks for exploration use `%load_ext autoreload` / `%autoreload 2`; logic moves into `src/` once it works.
 - Docstrings in numpydoc format; semantic versioning; conventional commit messages.
-- Secrets only via environment variables; nothing sensitive in notebooks, examples, or git history.
+- Secrets only via environment variables (`.env`, never committed); nothing sensitive in notebooks, examples, or git history. `.env.example` is the committed template.
+- Run the CI checks locally before pushing, with the venv activated: `ruff check .`, `ruff format --check .` (fix with `ruff format .`), and `pytest`.
+- Ruff is configured in `pyproject.toml` to exclude `notebooks` and `*.md`, so exploratory code and documentation samples are not linted or reformatted.
+- Keep one virtual environment per project. The `.gitignore` pattern `.venv*/` covers variants such as `.venv-1`.
 
 ## 11. Risks
 
@@ -287,18 +307,21 @@ The phases follow your seven updates (numbers in parentheses) but are reordered 
 | Custom-period semantics confuse users | Clear distinction between binned and label-based periods in docs and error messages |
 | Pandas alias changes between versions | Pin `pandas>=2.2`; centralize aliases in `periods.py` |
 | Scope creep | Keep data fetching out of core; ship v0.1.0 after Phase 6 |
+| Redistributing market data may violate the data provider's terms | Do not commit downloaded data (D8); provide the download script; use openly licensed datasets for committed fixtures and non-financial demos |
 
 ## 12. Decision Log
 
 | ID | Decision | Status |
 |----|----------|--------|
-| D1 | Package name: `piecewise_correlation` (repo: `piecewise-correlation-clustering`) | Proposed |
+| D1 | Package name: `piecewise_correlation` (distribution name `piecewise-correlation`, repo: `piecewise-correlation-clustering`) | Adopted in `pyproject.toml` |
 | D2 | Canonical internal format is a tidy long DataFrame; Series accepted only via conversion | Proposed |
 | D3 | Default similarity is r² (matches prototype); `abs` and `signed` available | Proposed |
 | D4 | How to combine matrices when a pair is NaN in some periods (re-normalize weights vs. flag) | **Open** |
 | D5 | Default clustering method: hierarchical (average linkage) | Proposed |
 | D6 | Can a group match its own past in prediction? | **Open** |
 | D7 | Scaling default: `max` for clustering, expanding `max` for prediction | **Open** |
+| D8 | Downloaded example data is not committed: `examples/data/` is gitignored and users generate it with `download_sp100.py` and their own free Alpaca keys | Decided |
+| D9 | Ruff excludes `notebooks` and `*.md`; CI runs lint, format check, and tests on Python 3.10-3.12 | Decided |
 
 ## 13. Update Log
 
@@ -307,6 +330,7 @@ Add an entry each time scope changes, then update the relevant roadmap phase and
 | Date | Update | Affects | Notes |
 |------|--------|---------|-------|
 | 2026-11-17 | Initial plan created from the prototype and Updates 1-7 | All | Updates reordered by dependency (§8) |
+| 2026-11-18 | Phase 0 completed. Examples switched to pre-downloaded Parquet data (2025-01-01 onward, S&P 100, hourly IEX); download script added; example data kept out of git; CI and ruff configured | §3, §4, §8 (Phase 0, Phase 1), §9, §10, §11, §12 (D1, D8, D9) | `.env` is only needed by `download_sp100.py`. Several §3 issues fixed in the example script; the class implementation is Phase 1 |
 
 **Template for new updates:**
 

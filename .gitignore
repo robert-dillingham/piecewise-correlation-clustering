@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+project_plan.md
 
 # --- Virtual environments ---
 .venv/
@@ -14,6 +15,9 @@ __pycache__/
 build/
 dist/
 .eggs/
+
+# --- Data files ---
+examples/data/
 
 # --- Tooling caches ---
 .pytest_cache/
